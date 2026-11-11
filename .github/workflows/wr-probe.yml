@@ -1,0 +1,10 @@
+name: wr-probe
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "workflow_run fired id=${{ github.event.workflow_run.id }} event=${{ github.event.workflow_run.event }}"
